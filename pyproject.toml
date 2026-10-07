@@ -1,0 +1,22 @@
+[project]
+name = "earth-forecasting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "mich3leRusso", email = "michele00russo@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "earth2studio",
+]
+
+[project.scripts]
+earth-forecasting = "earth_forecasting:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+earth2studio = { git = "https://github.com/NVIDIA/earth2studio.git", rev = "0.19.0" }
