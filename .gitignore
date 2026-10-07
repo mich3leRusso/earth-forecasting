@@ -6,5 +6,6 @@ dist/
 wheels/
 *.egg-info
 *.checkpoint
+*.json
 # Virtual environments
 .venv
