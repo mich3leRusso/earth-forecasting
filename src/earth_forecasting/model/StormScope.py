@@ -78,7 +78,7 @@ def load_data(model: StormScopeMeteosatEU, start_time: np.datetime64, device: to
 
     # 2x downsample 1km data to the common 2km grid
     x, coords = StormScopeMeteosatEU.combine_1km_2km_inputs(*x_res["1km"], *x_res["2km"])
-    # put data on the model grid (reorders variables if needed)
+    # put data on the model grid 
     x, coords = map_coords(x, coords, in_coords)
 
     x = x.expand(ensemble_size, -1, -1, -1, -1, -1)
@@ -99,3 +99,4 @@ def forecast(model: StormScopeMeteosatEU, x: torch.Tensor, coords, n_steps: int 
             if step == n_steps:
                 break
     return frames
+
