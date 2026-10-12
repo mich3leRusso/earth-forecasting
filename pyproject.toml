@@ -1,7 +1,7 @@
 [project]
 name = "earth-forecasting"
 version = "0.1.0"
-description = "Add your description here"
+description = "Satellite nowcasting over Ireland with NVIDIA StormScope, fine-tuned with LoRA"
 readme = "README.md"
 authors = [
     { name = "mich3leRusso", email = "michele00russo@gmail.com" }
@@ -11,15 +11,24 @@ dependencies = [
     "apache-tvm-ffi<0.1.12",
     "cartopy>=0.26.0",
     "earth2studio",
+    "eumdac>=3.1.0",
+    "graphviz>=0.21",
+    "huggingface-hub>=1.33.0",
     "mamba-ssm",
     "matplotlib>=3.11.2",
+    "natten>=0.21.7",
     "nvidia-physicsnemo>=2.1.0",
     "omegaconf>=2.3.0",
+    "tensorboard>=2.21.0",
+    "torchview>=0.2.7",
     "transformers>=4.45",
 ]
 
 [project.scripts]
-earth-forecasting = "earth_forecasting:main"
+earth-forecasting = "earth_forecasting.forecast:main"
+earth-download = "earth_forecasting.data:main"
+earth-train = "earth_forecasting.train:main"
+earth-publish = "earth_forecasting.hub:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]

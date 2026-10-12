@@ -1,0 +1,36 @@
+# LoRA fine-tuning of StormScope over Ireland at a 1-hour step.
+# Used by `earth-download` (which frames to fetch) and `earth-train` (everything else).
+# Any value can be overridden on the command line, e.g. `earth-train configs/train.yaml train.max_hours=2`.
+
+data:
+  dir: data/fci_ireland
+  region:              # degrees; the crop is rounded up to 32 px per side
+    lat: [51.2, 55.6]
+    lon: [-11.0, -5.2]
+  step_minutes: 60     # spacing between frames = forecast step
+  # Forecast start times, [start, end). Jan-May 2026 is in NVIDIA's training set, so only later data.
+  # The one-day gap keeps validation targets out of training windows.
+  train: ["2026-06-01", "2026-06-29"]
+  val: ["2026-09-02", "2026-09-09"]
+
+lora:
+  rank: 8
+  blocks: [8, 9, 10, 11, 12, 13, 14, 15]   # of 16 per expert; both experts get the same blocks
+  layers: [qkv, proj]                      # attention projections inside each block
+
+train:
+  lr: 2.0e-4
+  grad_accum: 8          # batch is 1 (8 GB GPU); one optimizer step every grad_accum samples
+  max_hours: 20.0        # wall-clock limit for the whole run
+  max_steps: null        # optional limit on samples seen; null = only max_hours
+  val_every: 400         # samples between validations
+  val_samples: 50        # validation windows per check (fixed noise, comparable across checks)
+  num_workers: 2
+
+output:
+  checkpoints: checkpoints/lora_1h   # best.pt (lowest val loss) and last.pt adapters
+  tensorboard: runs/lora_1h          # `tensorboard --logdir runs`
+
+hub:                   # used by `earth-publish`
+  repo_id: null        # your Hugging Face model repo, e.g. your-name/stormscope-ireland-lora
+  private: true        # only applies when the repo is created

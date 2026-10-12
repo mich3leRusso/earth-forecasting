@@ -4,8 +4,14 @@ __pycache__/
 build/
 dist/
 wheels/
+model_architecture/
 *.egg-info
 *.checkpoint
 *.json
 # Virtual environments
 .venv
+constants.py
+*.run
+data/
+checkpoints/
+runs/
