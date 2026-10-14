@@ -42,10 +42,26 @@ def main() -> None:
     if missing:
         raise SystemExit("the config lacks sections these steps need: " + ", ".join(missing))
 
+    # run the steps in order
     for step in steps:
         print(f"\n=== {step} ===")
-        STEPS[step](cfg)
+        if step=="download":
+            data.run(cfg)
+        elif step=="check":
+            checks.run(cfg)
+        elif step=="evaluate":
+            evaluate.run(cfg)
+        elif step=="forecast":
+            forecast.run(cfg)
+        elif step=="publish":
+            hub.run(cfg)
+        elif step=="train":
+            train.run(cfg)
+        else:
+            raise SystemExit(f"unknown step {step}, steps must be a non-empty list of {list(STEPS.keys())}")
 
 
+        print(f"=== {step} done ===")
+        
 if __name__ == "__main__":
     main()
