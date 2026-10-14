@@ -8,27 +8,18 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "apache-tvm-ffi<0.1.12",
-    "cartopy>=0.26.0",
     "earth2studio",
-    "eumdac>=3.1.0",
-    "graphviz>=0.21",
+    "eumdac>=3.1.0",                 # EUMETSAT client used by earth2studio's MeteosatFCI
     "huggingface-hub>=1.33.0",
-    "mamba-ssm",
     "matplotlib>=3.11.2",
-    "natten>=0.21.7",
+    "natten>=0.21.7",                # StormScope's neighborhood attention, via physicsnemo
     "nvidia-physicsnemo>=2.1.0",
     "omegaconf>=2.3.0",
-    "tensorboard>=2.21.0",
-    "torchview>=0.2.7",
-    "transformers>=4.45",
+    "tensorboard>=2.21.0",           # backend of torch.utils.tensorboard
 ]
 
 [project.scripts]
-earth-forecasting = "earth_forecasting.forecast:main"
-earth-download = "earth_forecasting.data:main"
-earth-train = "earth_forecasting.train:main"
-earth-publish = "earth_forecasting.hub:main"
+earth = "earth_forecasting.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
@@ -36,10 +27,3 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 earth2studio = { git = "https://github.com/NVIDIA/earth2studio.git", rev = "0.19.0" }
-mamba-ssm = { git = "https://github.com/state-spaces/mamba" }
-
-[tool.uv.extra-build-dependencies]
-mamba-ssm = ["torch"]
-
-[tool.uv.extra-build-variables]
-mamba-ssm = { MAMBA_SKIP_CUDA_BUILD = "TRUE" }

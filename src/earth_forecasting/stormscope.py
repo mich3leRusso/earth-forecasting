@@ -3,12 +3,15 @@
 Run `python -m earth_forecasting.stormscope` for a smoke test on random input.
 """
 
+import os
+
 import numpy as np
 import torch
 import xarray as xr
 from omegaconf import OmegaConf
 
 from earth2studio.models.px.stormscope_meteosat import StormScopeMeteosatEU
+from earth_forecasting.config import region_of
 
 # (lat range, lon range) in degrees
 IRELAND = ((51.2, 55.6), (-11.0, -5.2))
@@ -66,6 +69,26 @@ def fit_experts_to_crop(model: StormScopeMeteosatEU) -> None:
         dit.detokenizer.h_patches, dit.detokenizer.w_patches = h, w
 
 
+def to_model_inputs(model: StormScopeMeteosatEU, frames: torch.Tensor) -> torch.Tensor:
+    """The authors' input transform, as in create_generator: physical radiances -> raw counts ->
+    normalized, off-Earth pixels set to 0. Missing pixels on Earth (NaN) also become 0;
+    data.check_data counts them before this hides them."""
+    return torch.nan_to_num(model.normalize(frames.to(model.invariants.device)))
+
+
+def earth_mask(model: StormScopeMeteosatEU, device=None) -> torch.Tensor:
+    """(H, W) boolean mask of the crop's pixels that see the Earth, on the model's device by default."""
+    return torch.as_tensor(model.earth_mask, dtype=torch.bool, device=device or model.invariants.device)
+
+
+def visualize_model(model, file_name="./model_architecture/model_graph.txt"):
+    """Write every parameter name and whether it trains, one per line (handy for picking LoRA targets)."""
+    os.makedirs(os.path.dirname(file_name), exist_ok=True)
+    with open(file_name, "w") as f:
+        for name, param in model.named_parameters():
+            f.write(f"{name} {param.requires_grad}\n")
+
+
 def set_time_step(model: StormScopeMeteosatEU, step: np.timedelta64) -> None:
     """Use frames `step` apart: N_INPUT context frames up to now, one prediction `step` ahead."""
     model.input_times = np.arange(-N_INPUT + 1, 1) * step
@@ -85,6 +108,13 @@ def load_model(device: torch.device, region=None, compile: bool = True) -> Storm
         fit_experts_to_crop(model)
     if compile:
         model.compile_model()
+    return model
+
+
+def model_from_config(cfg, device) -> StormScopeMeteosatEU:
+    """StormScope cropped to cfg.data.region at a cfg.data.step_minutes step, uncompiled (training, evaluation)."""
+    model = load_model(device, region=region_of(cfg), compile=False)
+    set_time_step(model, np.timedelta64(cfg.data.step_minutes, "m"))
     return model
 
 

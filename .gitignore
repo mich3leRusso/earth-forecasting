@@ -15,3 +15,4 @@ constants.py
 data/
 checkpoints/
 runs/
+graphify-out/

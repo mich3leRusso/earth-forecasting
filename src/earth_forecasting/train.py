@@ -4,12 +4,11 @@ The base model predicts 10 minutes ahead from 6 frames 10 minutes apart. Here th
 `data.step_minutes` apart, and only LoRA adapters on attention layers are trained: every
 original weight stays frozen.
 
-`earth-train configs/train.yaml [key=value ...]` trains; progress goes to TensorBoard.
+The `train` step (see cli.py) trains; progress goes to TensorBoard.
 Run `python -m earth_forecasting.train` for a smoke test on synthetic frames (no network).
 """
 
-import os
-import sys
+import math
 import tempfile
 import time
 from pathlib import Path
@@ -29,30 +28,21 @@ from physicsnemo.experimental.peft import (
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from earth_forecasting.data import FrameWindows, crop_grid, write_synthetic_frames
-from earth_forecasting.stormscope import load_model, set_time_step
-
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "train.yaml"
-
-
-def visualize_model(model, file_name="./model_architecture/model_graph.txt"):
-    os.makedirs(os.path.dirname(file_name), exist_ok=True)
-    with open(file_name, "w") as f:
-        for name, param in model.named_parameters():
-            f.write(f"{name} {param.requires_grad}\n")
-
-
-def region_of(cfg):
-    return tuple(cfg.data.region.lat), tuple(cfg.data.region.lon)
+from earth_forecasting.checks import check_data
+from earth_forecasting.config import load_config
+from earth_forecasting.data import FrameWindows, synthetic_frame_shape, write_synthetic_frames
+from earth_forecasting.stormscope import model_from_config, to_model_inputs
 
 
 def setup_model(cfg, device):
     """Frozen StormScope on the region at the config's step, with LoRA on the configured attention layers."""
-    model = load_model(device, region=region_of(cfg), compile=False)
-    set_time_step(model, np.timedelta64(cfg.data.step_minutes, "m"))
+    model = model_from_config(cfg, device)
     blocks = "|".join(str(b) for b in cfg.lora.blocks)
     layers = "|".join(cfg.lora.layers)
-    apply_lora(model, LoRAConfig(rank=cfg.lora.rank, target_pattern=rf"blocks\.({blocks})\.attention\.({layers})$"))
+    pattern = rf"blocks\.({blocks})\.attention\.({layers})$"
+    if cfg.lora.output_layer:
+        pattern += r"|detokenizer\.proj_layer\.output_projection$"
+    apply_lora(model, LoRAConfig(rank=cfg.lora.rank, target_pattern=pattern))
     print_trainable_parameters(model)
     return model
 
@@ -68,7 +58,7 @@ def condition(model, context, times):
 
 def batch_loss(model, losses, frames, times, expert):
     """Denoising loss of one expert: noise the target frame at a sigma in its range, denoise, weighted MSE."""
-    x = torch.nan_to_num(model.normalize(frames.to(model.invariants.device)))  # radiances -> model scale
+    x = to_model_inputs(model, frames)
     lo, hi = model.expert_sigma_min[expert], model.expert_sigma_max[expert]
     # ponytail: log-uniform sigma inside the expert's range; NVIDIA's training distribution isn't published
     sigma = lo * (hi / lo) ** torch.rand(x.shape[0], device=x.device)
@@ -89,6 +79,28 @@ def validate(model, losses, dataset, max_samples):
     return sum(values) / len(values)
 
 
+def make_optimizer(cfg, params, optimizer_steps):
+    """Optimizer and learning-rate schedule from cfg.train: linear warmup, then cosine decay to min_lr * lr."""
+    t = cfg.train
+    if t.optimizer == "muon":
+        # Muon orthogonalizes each 2-D update; match_rms_adamw rescales it to AdamW's size, so `lr` means the same
+        optimizer = torch.optim.Muon(params, lr=t.lr, weight_decay=t.weight_decay, adjust_lr_fn="match_rms_adamw")
+    elif t.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(params, lr=t.lr, weight_decay=t.weight_decay)
+    else:
+        raise ValueError(f"train.optimizer must be muon or adamw, got {t.optimizer}")
+
+    warmup = max(1, round(t.warmup * optimizer_steps))
+
+    def factor(step):
+        if step < warmup:
+            return (step + 1) / warmup
+        progress = min((step - warmup) / max(1, optimizer_steps - warmup), 1.0)
+        return t.min_lr + (1 - t.min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+
+    return optimizer, torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
 def train(cfg):
     """Batch 1 with gradient accumulation, alternating experts; stops at train.max_hours or train.max_steps."""
     model = setup_model(cfg, torch.device("cuda"))
@@ -98,11 +110,14 @@ def train(cfg):
     train_set = FrameWindows(*cfg.data.train, cfg.data.dir, step)
     val_set = FrameWindows(*cfg.data.val, cfg.data.dir, step)
     if not len(train_set) or not len(val_set):
-        raise ValueError(f"no complete samples on disk: train {len(train_set)}, val {len(val_set)}. Run earth-download first.")
+        raise ValueError(f"no complete samples on disk: train {len(train_set)}, val {len(val_set)}. Run the download step first.")
+    check_data(model, {"train": train_set, "val": val_set}, num_workers=cfg.train.num_workers)
     loader = DataLoader(train_set, batch_size=1, shuffle=True, num_workers=cfg.train.num_workers, drop_last=True)
 
     groups = split_params_for_optimizer(model)
-    optimizer = torch.optim.AdamW(groups["lora"] + groups["extras"], lr=cfg.train.lr)
+    params = groups["lora"] + groups["extras"]
+    total = cfg.train.max_steps or cfg.train.epochs * len(train_set)  # samples; sets the schedule length
+    optimizer, schedule = make_optimizer(cfg, params, max(1, total // cfg.train.grad_accum))
     ckpt_dir = Path(cfg.output.checkpoints)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(cfg.output.tensorboard)
@@ -110,12 +125,13 @@ def train(cfg):
 
     seen, t0 = 0, time.time()
     deadline = t0 + cfg.train.max_hours * 3600
-    done = lambda: time.time() > deadline or seen == cfg.train.max_steps
+    done = lambda: time.time() > deadline or seen >= total
 
     # best.pt is saved only when validation beats the untouched base model
     best = validate(model, losses, val_set, cfg.train.val_samples)
     writer.add_scalar("val/loss", best, 0)
     print(f"train samples {len(train_set)}, val samples {len(val_set)}, val loss before training {best:.4f}")
+    print(f"{cfg.train.optimizer}: {total} samples, {total // cfg.train.grad_accum} optimizer steps")
     while not done():
         for frames, times in loader:
             expert = seen % len(model.experts)
@@ -126,8 +142,12 @@ def train(cfg):
             seen += 1
             writer.add_scalar(f"train/loss_expert{expert}", loss.item(), seen)
             if seen % cfg.train.grad_accum == 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
                 optimizer.step()
+                schedule.step()
                 optimizer.zero_grad()
+                writer.add_scalar("optim/lr", schedule.get_last_lr()[0], seen)
+                writer.add_scalar("optim/grad_norm", grad_norm.item(), seen)
             if seen % cfg.train.val_every == 0:
                 val = validate(model, losses, val_set, cfg.train.val_samples)
                 writer.add_scalar("val/loss", val, seen)
@@ -144,30 +164,44 @@ def train(cfg):
     return model
 
 
-def main() -> None:
-    """earth-train [config.yaml] [key=value ...]"""
-    args = sys.argv[1:]
-    path = args.pop(0) if args and "=" not in args[0] else DEFAULT_CONFIG
-    train(OmegaConf.merge(OmegaConf.load(path), OmegaConf.from_dotlist(args)))
+def run(cfg) -> None:
+    """Step `train`; the model is dropped on return, freeing the GPU for the steps after it."""
+    train(cfg)
+    torch.cuda.empty_cache()
 
 
 def smoke_test():
     """A few steps on 9 synthetic hourly frames: data -> loss -> LoRA update -> checkpoints and TensorBoard logs."""
-    cfg = OmegaConf.load(DEFAULT_CONFIG)
-    box, variables, _ = crop_grid(region_of(cfg))
-    shape = (len(variables), box[0][1] - box[0][0], box[1][1] - box[1][0])
+    cfg = load_config(args=[])
+    # schedule over 100 steps: ramps up during warmup, peaks at lr, ends near min_lr * lr
+    optimizer, schedule = make_optimizer(cfg, [torch.zeros(4, 4, requires_grad=True)], 100)
+    lrs = []
+    for _ in range(100):
+        lrs.append(schedule.get_last_lr()[0])
+        optimizer.step()
+        schedule.step()
+    warmup = round(cfg.train.warmup * 100)
+    assert lrs[0] < lrs[warmup - 1] and abs(max(lrs) - cfg.train.lr) < 1e-9, "warmup should ramp up to lr"
+    assert abs(lrs[-1] - cfg.train.min_lr * cfg.train.lr) < 0.01 * cfg.train.lr, "cosine should end near min_lr * lr"
+
+    shape = synthetic_frame_shape(cfg)
     t0 = time.time()
     with tempfile.TemporaryDirectory() as d:
         write_synthetic_frames(d, "2026-07-01T00", n_frames=9, shape=shape)  # full windows for anchors 05:00-07:00
         cfg = OmegaConf.merge(cfg, {
             "data": {"dir": d, "train": ["2026-07-01T05:00", "2026-07-01T07:00"], "val": ["2026-07-01T07:00", "2026-07-01T08:00"]},
             "train": {"max_steps": 4, "grad_accum": 2, "val_every": 4, "val_samples": 1, "num_workers": 0},
+            "lora": {"output_layer": True},
             "output": {"checkpoints": f"{d}/ckpt", "tensorboard": f"{d}/runs"},
         })
         model = train(cfg)
 
         trainable = {n: p for n, p in model.named_parameters() if p.requires_grad}
         assert trainable and all("lora" in n for n in trainable), "only LoRA parameters should train"
+        adapted = {n.rsplit(".", 1)[0] for n in trainable}  # modules holding lora_A / lora_B
+        expected = len(model.experts) * (len(cfg.lora.blocks) * len(cfg.lora.layers) + 1)
+        assert len(adapted) == expected, f"{len(adapted)} adapted layers, expected {expected}"
+        assert sum(n.endswith("detokenizer.proj_layer.output_projection") for n in adapted) == len(model.experts)
         assert any(p.abs().sum() > 0 for n, p in trainable.items() if "lora_B" in n), "lora_B never moved off zero"
         assert (Path(d) / "ckpt" / "last.pt").exists(), "no adapter saved"
         assert list(Path(d, "runs").glob("events.out.tfevents*")), "no TensorBoard log written"

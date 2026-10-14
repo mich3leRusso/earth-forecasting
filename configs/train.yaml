@@ -1,31 +1,46 @@
 # LoRA fine-tuning of StormScope over Ireland at a 1-hour step.
-# Used by `earth-download` (which frames to fetch) and `earth-train` (everything else).
-# Any value can be overridden on the command line, e.g. `earth-train configs/train.yaml train.max_hours=2`.
+#   uv run earth configs/train.yaml
+# Any value can be overridden on the command line, e.g. `uv run earth configs/train.yaml train.epochs=4`
+# or `uv run earth configs/train.yaml steps=[publish]`.
+
+# What to do, in order: download, check, train, evaluate, forecast, publish (see `uv run earth --help`).
+# Frames already on disk are skipped, so keeping `download` first costs only seconds once the data is there.
+steps: [download, train, evaluate]
 
 data:
   dir: data/fci_ireland
   region:              # degrees; the crop is rounded up to 32 px per side
     lat: [51.2, 55.6]
     lon: [-11.0, -5.2]
-  step_minutes: 60     # spacing between frames = forecast step
-  # Forecast start times, [start, end). Jan-May 2026 is in NVIDIA's training set, so only later data.
-  # The one-day gap keeps validation targets out of training windows.
-  train: ["2026-06-01", "2026-06-29"]
+  step_minutes: 60     
+  train: ["2026-06-01", "2026-09-01"]
   val: ["2026-09-02", "2026-09-09"]
 
 lora:
   rank: 8
   blocks: [8, 9, 10, 11, 12, 13, 14, 15]   # of 16 per expert; both experts get the same blocks
   layers: [qkv, proj]                      # attention projections inside each block
+  output_layer: True                      # also adapt the final projection from tokens to the 16 channels
 
 train:
-  lr: 2.0e-4
+  optimizer: muon        # muon (orthogonalized updates; LoRA matrices are 2-D) or adamw
+  lr: 2.0e-4             # peak learning rate; with muon, updates are rescaled to AdamW's size
+  weight_decay: 0.01     # gently pulls the adapters back toward the base model
+  warmup: 0.05           # share of optimizer steps with a linear warmup
+  min_lr: 0.1            # cosine decay ends at this fraction of lr
+  grad_clip: 1.0         # max gradient norm per optimizer step
   grad_accum: 8          # batch is 1 (8 GB GPU); one optimizer step every grad_accum samples
-  max_hours: 20.0        # wall-clock limit for the whole run
-  max_steps: null        # optional limit on samples seen; null = only max_hours
+  epochs: 8              # passes over the training windows; also the length of the lr schedule
+  max_hours: 20.0        # safety limit on wall-clock time
+  max_steps: null        # samples; overrides epochs, mainly for quick tests
   val_every: 400         # samples between validations
   val_samples: 50        # validation windows per check (fixed noise, comparable across checks)
   num_workers: 2
+
+eval:                  # real forecasts on the val period, run after training (or with `earth-evaluate`)
+  lead_steps: 2        # +1h and +2h: one model step at a time, feeding predictions back in
+  samples: 20          # validation times, evenly spread over the val period
+  diffusion_steps: 48  # sampler steps per forecast step (StormScope's default)
 
 output:
   checkpoints: checkpoints/lora_1h   # best.pt (lowest val loss) and last.pt adapters

@@ -2,20 +2,19 @@
 
 The repository gets the adapter (best.pt, or last.pt if validation never beat the base model),
 the exact config it was trained with, and a short model card. Set `hub.repo_id` in the config
-and log in once with `hf auth login` (or set HF_TOKEN), then run `earth-publish configs/train.yaml`.
+and log in once with `hf auth login` (or set HF_TOKEN), then run `uv run earth configs/train.yaml steps=[publish]`.
 
 Run `python -m earth_forecasting.hub` for a smoke test that builds the folder without uploading.
 """
 
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
 from huggingface_hub import HfApi
 from omegaconf import OmegaConf
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "train.yaml"
+from earth_forecasting.config import load_config
 
 MODEL_CARD = """---
 base_model: nvidia/stormscope-meteosat
@@ -30,7 +29,7 @@ latitudes {lat} and longitudes {lon}.
 
 The base model predicts 10 minutes ahead from six frames 10 minutes apart. This adapter keeps
 the base weights frozen and adds rank-{rank} LoRA matrices to the attention layers ({layers})
-of blocks {blocks} in both diffusion experts, so the frames it reads and predicts are
+of blocks {blocks} in both diffusion experts{output_layer}, so the frames it reads and predicts are
 {step} minutes apart.
 
 Training windows start between {train_start} and {train_end}; validation between {val_start}
@@ -72,6 +71,7 @@ def stage(cfg, folder: Path) -> Path:
             rank=cfg.lora.rank,
             layers=", ".join(cfg.lora.layers),
             blocks=", ".join(str(b) for b in cfg.lora.blocks),
+            output_layer=", plus the final projection to the 16 channels" if cfg.lora.get("output_layer") else "",
             train_start=cfg.data.train[0],
             train_end=cfg.data.train[1],
             val_start=cfg.data.val[0],
@@ -93,11 +93,9 @@ def publish(cfg) -> str:
     return str(url)
 
 
-def main() -> None:
-    """earth-publish [config.yaml] [key=value ...]"""
-    args = sys.argv[1:]
-    path = args.pop(0) if args and "=" not in args[0] else DEFAULT_CONFIG
-    print(publish(OmegaConf.merge(OmegaConf.load(path), OmegaConf.from_dotlist(args))))
+def run(cfg) -> None:
+    """Step `publish`."""
+    print(publish(cfg))
 
 
 def smoke_test():
@@ -106,7 +104,7 @@ def smoke_test():
         ckpt = Path(d) / "ckpt"
         ckpt.mkdir()
         (ckpt / "last.pt").write_bytes(b"fake adapter")
-        cfg = OmegaConf.merge(OmegaConf.load(DEFAULT_CONFIG), {"output": {"checkpoints": str(ckpt)}, "hub": {"repo_id": "someone/test"}})
+        cfg = OmegaConf.merge(load_config(args=[]), {"output": {"checkpoints": str(ckpt)}, "hub": {"repo_id": "someone/test"}})
         folder = stage(cfg, Path(d) / "staged")
         assert sorted(p.name for p in folder.iterdir()) == ["README.md", "last.pt", "train.yaml"]
         card = (folder / "README.md").read_text()

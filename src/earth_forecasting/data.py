@@ -5,13 +5,12 @@ product is deleted right after. Frames are stored as physical radiances on the m
 2 km grid, in the model's channel order; the model's own `normalize` turns them into
 network inputs.
 
-`earth-download configs/train.yaml` downloads the train and val periods of the config.
+The `download` step (see cli.py) fetches every period the config defines (train, val, test).
 Run `python -m earth_forecasting.data` for a smoke test on synthetic frames (no network).
 """
 
 import os
 import shutil
-import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +24,10 @@ from tqdm import tqdm
 
 from earth2studio.data.meteosat_fci import MeteosatFCI
 from earth2studio.models.px.stormscope_meteosat import StormScopeMeteosatEU
+from earth_forecasting.config import region_of
 from earth_forecasting.stormscope import N_INPUT, pixel_box
+
+SPLITS = ("train", "val", "test")  # periods a config may define under `data`; each one is optional
 
 
 def set_eumetsat_credentials() -> None:
@@ -86,16 +88,16 @@ def download_frames(start, end, out_dir: Path, region, step=np.timedelta64(1, "h
 
 
 class FrameWindows(Dataset):
-    """Samples anchored at each time t in [start, end) whose frames t-5*step ... t+step are all on disk.
+    """Samples anchored at each time t in [start, end) whose frames t-5*step ... t+lead_steps*step are all on disk.
 
-    Item: (frames (N_INPUT + 1, C, y, x) physical radiances, t in seconds since epoch).
-    The last frame is the target, one step after the anchor.
+    Item: (frames (N_INPUT + lead_steps, C, y, x) physical radiances, t in seconds since epoch).
+    The first N_INPUT frames are the context, ending at the anchor; the rest are the targets.
     """
 
-    def __init__(self, start, end, data_dir: Path, step=np.timedelta64(1, "h")):
+    def __init__(self, start, end, data_dir: Path, step=np.timedelta64(1, "h"), lead_steps: int = 1):
         self.data_dir = Path(data_dir)
         have = {np.datetime64(p.stem, "m") for p in self.data_dir.glob("*.npy")}
-        self.offsets = np.arange(-N_INPUT + 1, 2) * step
+        self.offsets = np.arange(-N_INPUT + 1, lead_steps + 1) * step
         self.times = [
             t
             for t in np.arange(np.datetime64(start, "m"), np.datetime64(end, "m"), step)
@@ -111,21 +113,27 @@ class FrameWindows(Dataset):
         return torch.from_numpy(frames), t.astype("datetime64[s]").astype(np.int64)
 
 
-def main() -> None:
-    """Download every frame the config's train and val samples need."""
-    cfg = OmegaConf.load(sys.argv[1] if len(sys.argv) > 1 else "configs/train.yaml")
+def run(cfg) -> None:
+    """Step `download`: fetch every frame the config's periods need (frames already on disk are skipped)."""
     step = np.timedelta64(cfg.data.step_minutes, "m")
-    for name in ("train", "val"):
+    lead = cfg.eval.lead_steps if "eval" in cfg else 1  # evaluation also needs the frames up to its last lead
+    for name in (n for n in SPLITS if n in cfg.data):
         start, end = cfg.data[name]
         print(f"{name}: {start} -> {end}")
-        # a sample anchored at t needs frames from t - (N_INPUT-1) steps to t + 1 step
+        # a sample anchored at t needs frames from t - (N_INPUT-1) steps to t + lead steps
         download_frames(
             np.datetime64(start, "m") - (N_INPUT - 1) * step,
-            np.datetime64(end, "m") + step,
+            np.datetime64(end, "m") + lead * step,
             cfg.data.dir,
-            (tuple(cfg.data.region.lat), tuple(cfg.data.region.lon)),
+            region_of(cfg),
             step,
         )
+
+
+def synthetic_frame_shape(cfg):
+    """(channels, y, x) of the config's crop, for synthetic frames that match the real ones."""
+    box, variables, _ = crop_grid(region_of(cfg))
+    return len(variables), box[0][1] - box[0][0], box[1][1] - box[1][0]
 
 
 def write_synthetic_frames(data_dir, start, n_frames, shape=(16, 128, 224), step=np.timedelta64(1, "h"), skip=()):
