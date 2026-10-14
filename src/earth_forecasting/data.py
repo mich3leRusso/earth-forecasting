@@ -1,7 +1,7 @@
 """MTG-FCI frames over a region: download once to .npy, then serve training samples.
 
-Each EUMETSAT product is the full Earth disk (~1 GB), so only the crop is kept and the
-product is deleted right after. Frames are stored as physical radiances on the model's
+An EUMETSAT product is the full Earth disk (~1 GB) cut into 40 horizontal chunks; only the
+chunks that contain the crop are downloaded (~45 MB for Ireland), and deleted once cropped. Frames are stored as physical radiances on the model's
 2 km grid, in the model's channel order; the model's own `normalize` turns them into
 network inputs.
 
@@ -9,6 +9,7 @@ The `download` step (see cli.py) fetches every period the config defines (train,
 Run `python -m earth_forecasting.data` for a smoke test on synthetic frames (no network).
 """
 
+import bisect
 import os
 import shutil
 import tempfile
@@ -22,7 +23,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from earth2studio.data.meteosat_fci import MeteosatFCI
+from earth2studio.data.meteosat_fci import MeteosatFCI, _sort_body_key
 from earth2studio.models.px.stormscope_meteosat import StormScopeMeteosatEU
 from earth_forecasting.config import region_of
 from earth_forecasting.stormscope import N_INPUT, pixel_box
@@ -51,13 +52,54 @@ def crop_grid(region):
     return box, variables, mtg_y
 
 
+FDHSI_CHUNKS = 40  # horizontal chunks per full-disk product, numbered 1..40 from the south
+FDHSI_ROWS_2KM = 5568  # rows of the full disk at 2 km
+
+
+def chunks_for_rows(i0: int, i1: int, rows: int = FDHSI_ROWS_2KM) -> set[int]:
+    """Chunk numbers covering full-disk rows [i0, i1), counted from the south on a `rows`-row grid."""
+    starts = [int(c * rows / FDHSI_CHUNKS) for c in range(FDHSI_CHUNKS)]  # first row of chunks 1..40
+    return set(range(bisect.bisect_right(starts, i0), bisect.bisect_right(starts, i1 - 1) + 1))
+
+
+class CroppedFCI(MeteosatFCI):
+    """MeteosatFCI that downloads only the chunks covering `chunks`, not the whole ~1 GB product.
+
+    earth2studio's reader counts rows from the first chunk it finds, so the crop is shifted by the
+    first downloaded chunk's own start row (`start_position_row`, stored in every chunk file).
+    """
+
+    def __init__(self, *args, chunks: set[int], **kwargs):
+        super().__init__(*args, **kwargs)
+        self.chunks = chunks
+
+    def _download_product(self, product, product_cache: str) -> None:
+        wanted = [n for n in product.entries if "BODY" in n and n.endswith(".nc") and _sort_body_key(n) in self.chunks]
+        if len(wanted) != len(self.chunks):
+            raise FileNotFoundError(f"product has chunks {sorted(map(_sort_body_key, wanted))}, need {sorted(self.chunks)}")
+        for name in wanted:
+            target = os.path.join(product_cache, os.path.basename(name))
+            with product.open(entry=name) as stream, open(target + ".part", "wb") as f:
+                shutil.copyfileobj(stream, f)
+            os.replace(target + ".part", target)  # a half-written chunk never looks complete
+
+    def _read_channel(self, product_dir, channel_name, pixel_roi=None):
+        if pixel_roi is None:
+            raise ValueError("CroppedFCI needs a pixel box")
+        first = min(Path(product_dir).rglob("*BODY*.nc"), key=lambda p: _sort_body_key(p.name))
+        start = int(self._ensure_dataset(str(first))[f"/data/{channel_name}/measured"]["start_position_row"][...]) - 1
+        (i0, i1), cols = pixel_roi
+        return super()._read_channel(product_dir, channel_name, ((i0 - start, i1 - start), cols))
+
+
 def download_frames(start, end, out_dir: Path, region, step=np.timedelta64(1, "h")) -> None:
     """Save one .npy per `step` in [start, end) as (channels, y, x) float32. Re-running skips saved frames."""
     set_eumetsat_credentials()
     box, variables, mtg_y = crop_grid(region)
+    chunks = chunks_for_rows(*box[0])  # chunks are bands of the disk, the same for both resolutions
     src = {
-        "2km": MeteosatFCI("2km", pixel_bbox=box, verbose=False),
-        "1km": MeteosatFCI("1km", pixel_bbox=tuple((2 * lo, 2 * hi) for lo, hi in box), verbose=False),
+        "2km": CroppedFCI("2km", pixel_bbox=box, verbose=False, chunks=chunks),
+        "1km": CroppedFCI("1km", pixel_bbox=tuple((2 * lo, 2 * hi) for lo, hi in box), verbose=False, chunks=chunks),
     }
     # a channel is taken at 1 km only when it doesn't exist at 2 km
     v2 = [v for v in variables if v in src["2km"].available_variables()]
@@ -157,6 +199,9 @@ def smoke_test():
         assert frames.shape == (N_INPUT + 1, 16, 128, 224) and frames.dtype == torch.float32
         assert np.array_equal(frames[-1].numpy(), np.load(Path(d) / "2026-07-01T06:00.npy")), "target = anchor + 1h"
         assert t == np.datetime64("2026-07-01T05:00", "s").astype(np.int64)
+    # chunk 37 of a real product starts at 2 km row 5011 and 1 km row 10022 (start_position_row - 1)
+    assert chunks_for_rows(5011, 5150) == {37} and chunks_for_rows(5010, 5011) == {36}
+    assert chunks_for_rows(5076, 5204) == {37, 38} and chunks_for_rows(10022, 10300, rows=2 * FDHSI_ROWS_2KM) == {37}
     print(f"data OK: {len(ds)} windows from 11 of 12 synthetic frames")
 
 
