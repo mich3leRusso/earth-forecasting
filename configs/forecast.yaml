@@ -1,0 +1,21 @@
+# One forecast from real satellite frames, with the fine-tuned model from the Hugging Face Hub.
+#   uv run earth configs/forecast.yaml
+#   uv run earth configs/forecast.yaml forecast.start=2026-10-14T09:00 forecast.steps=3
+# The six hourly frames before forecast.start are downloaded first if they aren't on disk yet.
+
+steps: [forecast]
+
+adapter: hf://michele007rok/StormScope_Ireland   # a local .pt path also works; null = the base model
+
+data:                    # must match how the adapter was trained
+  dir: data/fci_ireland
+  region:
+    lat: [51.2, 55.6]
+    lon: [-11.0, -5.2]
+  step_minutes: 60
+
+forecast:
+  start: "2026-10-12T12:00"   # UTC, on the hour; any time with satellite data, up to about now
+  steps: 2                    # how many hours ahead: +1h, +2h
+  diffusion_steps: 48         # sampler steps per forecast step (StormScope's default)
+  output: runs/forecasts      # the forecast is saved here as forecast_<start>.npy

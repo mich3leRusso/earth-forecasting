@@ -34,8 +34,10 @@ def find_adapter(cfg):
     else best.pt (or last.pt) in output.checkpoints, else None."""
     if cfg.get("adapter"):
         return fetch_adapter(cfg.adapter)
-    ckpt = Path(cfg.output.get("checkpoints", ""))
-    return next((p for p in (ckpt / "best.pt", ckpt / "last.pt") if p.is_file()), None)
+    checkpoints = cfg.get("output", {}).get("checkpoints")
+    if not checkpoints:
+        return None
+    return next((p for p in (Path(checkpoints) / "best.pt", Path(checkpoints) / "last.pt") if p.is_file()), None)
 
 
 def finetuned_model(cfg, device=None):

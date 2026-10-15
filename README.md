@@ -62,8 +62,8 @@ uv run tensorboard --logdir runs                 # in another terminal: curves a
 ```
 
 - **download** fetches hourly frames for training (1 June – 31 August 2026) and validation
-  (2–8 September), about 2,400 frames, 1.8 MB each, into `data/fci_ireland/`. Hours already on
-  disk are skipped, so it can be stopped and restarted. Expect 10–30 s per frame.
+  (2–8 September): about 2,400 hours, so plan for several hours (see
+  [How the download works](#how-the-download-works)).
 - **train** checks the data, then trains LoRA adapters for 12 epochs (about 14 min each) and keeps
   the epoch with the lowest validation loss: `checkpoints/lora_1h/best.pt`.
 - **evaluate** forecasts 20 validation times at +1h and +2h and scores them (see below).
@@ -86,6 +86,18 @@ It prints the RMSE per channel and lead time and saves it to `runs/eval_test/rms
 models get the same diffusion noise for each date, so their difference comes from the adapter
 alone. To score another adapter, e.g. your own: `adapter=checkpoints/lora_1h/best.pt`.
 
+### Forecast: `configs/forecast.yaml`
+
+```bash
+uv run earth configs/forecast.yaml                                         # from 12 October 2026, 12:00
+uv run earth configs/forecast.yaml forecast.start=2026-10-14T09:00 forecast.steps=3
+```
+
+Makes one forecast with the adapter from the Hub: it fetches the six hours before
+`forecast.start` (if they aren't on disk already), predicts `forecast.steps` hours ahead and saves
+the result to `runs/forecasts/forecast_<start>.npy`, an array of shape (hours, 16 channels, 128,
+224) in the satellite's physical units. `adapter=null` runs the untouched base model instead.
+
 ### Publish: `configs/publish.yaml`
 
 ```bash
@@ -96,6 +108,43 @@ uv run earth configs/publish.yaml
 Uploads `checkpoints/lora_1h/best.pt`, the config and a model card to the `hub.repo_id`
 repository. Any config can then load it with `adapter=hf://<user>/<repo>`; it downloads on first
 use.
+
+## How the download works
+
+You don't run it separately: `download` is the first step of each config, and it fetches exactly
+the hours that config needs (its training, validation and test periods, plus the few hours before
+and after them that the samples use). Everything lands in one folder, `data/fci_ireland/`, as one
+small file per hour named after its time, e.g. `2026-07-10T12:00.npy`. Training, validation and
+test simply pick their files by date.
+
+EUMETSAT doesn't let you download a region: every hour comes as the whole Earth disk, cut into 40
+horizontal strips. The code downloads only the 2 strips that cover Ireland (about 45 MB instead of
+1 GB), cuts out the Ireland box, saves it and deletes the rest. Each hour takes 10–30 seconds,
+depending on how busy EUMETSAT is.
+
+If it's interrupted, just run the same command again: files already on disk are skipped. A few
+hours don't exist on EUMETSAT's side, or come incomplete; they are reported as `skipped` and left
+out, and so are the training samples that would need them.
+
+## Changing what it does
+
+Everything is in the YAML files under `configs/`; the code doesn't need to change. The usual
+edits:
+
+| To change | Edit | Notes |
+|---|---|---|
+| training or validation dates | `data.train`, `data.val` in `train.yaml` | `[start, end)`; keep validation after training, with a day in between |
+| the test week | `data.test` in `evaluate.yaml` | after every training and validation date |
+| when a forecast starts, how far ahead | `forecast.start`, `forecast.steps` in `forecast.yaml` | UTC, on the hour |
+| how far ahead to evaluate | `eval.lead_steps` | the download also fetches the extra hours |
+| which adapter is used | `adapter` | a local `.pt` file, `hf://<user>/<repo>`, or `null` for the base model |
+| how long / how hard to train | `train.epochs`, `train.lr`, `train.optimizer`, `lora.rank`, `lora.blocks` | see the comments in `train.yaml` |
+| where data and results go | `data.dir`, `output.checkpoints`, `output.tensorboard` | |
+| the region | `data.region` (degrees) | in every config, and retrain: an adapter only works on the region and step it was trained on |
+| the time step | `data.step_minutes` | same as the region: retrain, and re-download |
+
+For a one-off change you don't have to edit a file: pass it on the command line, e.g.
+`uv run earth configs/train.yaml train.epochs=4 data.train=[2026-07-01,2026-08-01]`.
 
 ## Smoke tests
 
@@ -125,7 +174,7 @@ for m in data hub plots stormscope checks train evaluate forecast; do uv run pyt
 ## Layout
 
 ```
-configs/                 train.yaml, evaluate.yaml, publish.yaml
+configs/                 train.yaml, evaluate.yaml, forecast.yaml, publish.yaml
 src/earth_forecasting/
     cli.py               the `earth` command: runs the config's steps
     config.py            loads a config plus key=value overrides

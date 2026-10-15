@@ -73,13 +73,13 @@ def training_curves(log_dir) -> pd.DataFrame:
     events = EventAccumulator(str(log_dir), size_guidance={"scalars": 0})
     events.Reload()
     tags = [tag for tag in ("train/loss", "val/loss") if tag in events.Tags()["scalars"]]
-    return pd.DataFrame({tag: {e.step: e.value for e in events.Scalars(tag)} for tag in tags}).rename_axis("epoch")
+    return pd.DataFrame({tag: {e.step: e.value for e in events.Scalars(tag)} for tag in tags}).sort_index().rename_axis("epoch")
 
 
 def rmse_summary(csv_path):
     """(mean RMSE per lead and model, with the gain over persistence; RMSE per channel) from evaluate's CSV."""
     table = pd.read_csv(csv_path)
-    mean = table.groupby(["lead_hours", "model"])["rmse"].mean().unstack("model")[MODELS]
+    mean = table.groupby(["lead_hours", "model"])["rmse"].mean().unstack("model")[MODELS].round(3)
     for name in ("fine-tuned", "base"):
         mean[f"{name} vs persistence"] = (1 - mean[name] / mean["persistence"]).map("{:+.0%}".format)
     per_channel = table.pivot_table(index="channel", columns=["lead_hours", "model"], values="rmse", sort=False)
@@ -102,6 +102,10 @@ def smoke_test():
                 w.add_scalar("val/loss", va, epoch)
         curves = training_curves(f"{d}/run")
         assert list(curves.index) == [1, 2] and abs(curves.loc[2, "val/loss"] - 0.6) < 1e-6
+        w = SummaryWriter(f"{d}/run")  # a late epoch-0 point must still come first
+        w.add_scalar("val/loss", 0.9, 0)
+        w.close()
+        assert list(training_curves(f"{d}/run").index) == [0, 1, 2]
     print("plots OK: RMSE summary and training curves")
 
 
