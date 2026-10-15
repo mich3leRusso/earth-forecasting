@@ -233,6 +233,17 @@ This uploads the adapter (`best.pt`, or `last.pt` if validation never improved),
 was trained with, and a model card describing the setup. The repository is created as private
 unless you set `hub.private: false`.
 
+To use a published adapter, put its Hub address wherever a config takes an adapter. It is
+downloaded the first time and cached after that:
+
+```bash
+uv run earth configs/evaluate.yaml steps=[forecast] adapter=hf://your-name/stormscope-ireland-lora
+```
+
+`hf://<user>/<repo>` loads `best.pt`; add a path to pick another file, e.g.
+`hf://<user>/<repo>/last.pt`. The config's region and step must match the ones the adapter was
+trained with, which are in the `train.yaml` published next to it.
+
 ## Forecasting
 
 ```bash

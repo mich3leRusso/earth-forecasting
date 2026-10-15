@@ -24,13 +24,15 @@ from torch.utils.tensorboard import SummaryWriter
 
 from earth_forecasting.config import load_config
 from earth_forecasting.data import FrameWindows, synthetic_frame_shape, write_synthetic_frames
+from earth_forecasting.hub import fetch_adapter
 from earth_forecasting.stormscope import N_INPUT, earth_mask, model_from_config, to_model_inputs
 
 
 def find_adapter(cfg):
-    """The config's `adapter` path if set, else best.pt (or last.pt) in output.checkpoints, else None."""
+    """The config's `adapter` if set (a path, or hf://<user>/<repo>[/<file>], downloaded on first use),
+    else best.pt (or last.pt) in output.checkpoints, else None."""
     if cfg.get("adapter"):
-        return Path(cfg.adapter)
+        return fetch_adapter(cfg.adapter)
     ckpt = Path(cfg.output.get("checkpoints", ""))
     return next((p for p in (ckpt / "best.pt", ckpt / "last.pt") if p.is_file()), None)
 

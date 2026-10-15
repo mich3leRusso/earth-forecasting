@@ -1,8 +1,11 @@
-"""Publish a trained LoRA adapter to a Hugging Face model repository.
+"""Publish a trained LoRA adapter to a Hugging Face model repository, and fetch one back.
 
 The repository gets the adapter (best.pt, or last.pt if validation never beat the base model),
 the exact config it was trained with, and a short model card. Set `hub.repo_id` in the config
 and log in once with `hf auth login` (or set HF_TOKEN), then run `uv run earth configs/train.yaml steps=[publish]`.
+
+Any config can point at a published adapter with `adapter: hf://<user>/<repo>[/<file>]`; it is
+downloaded on first use (see fetch_adapter).
 
 Run `python -m earth_forecasting.hub` for a smoke test that builds the folder without uploading.
 """
@@ -11,10 +14,26 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
 from omegaconf import OmegaConf
 
 from earth_forecasting.config import load_config
+
+def hub_location(spec: str) -> tuple[str, str]:
+    """`hf://<user>/<repo>[/<file>]` -> (repo id, file in the repo); the file defaults to best.pt."""
+    user, repo, *path = spec.removeprefix("hf://").strip("/").split("/")
+    return f"{user}/{repo}", "/".join(path) or "best.pt"
+
+
+def fetch_adapter(spec) -> Path:
+    """An adapter's local path: a path is returned as is, an `hf://` address is downloaded from the
+    Hugging Face Hub (once; later calls use huggingface_hub's cache)."""
+    spec = str(spec)
+    if not spec.startswith("hf://"):
+        return Path(spec)
+    repo_id, filename = hub_location(spec)
+    return Path(hf_hub_download(repo_id, filename))
+
 
 MODEL_CARD = """---
 base_model: nvidia/stormscope-meteosat
@@ -110,7 +129,10 @@ def smoke_test():
         card = (folder / "README.md").read_text()
         assert "someone/test" in card and "{" not in card, "model card has unfilled fields"
         assert OmegaConf.load(folder / "train.yaml") == cfg, "staged config differs from the training config"
-    print("hub OK: adapter, config and model card staged (nothing uploaded)")
+    assert hub_location("hf://someone/repo") == ("someone/repo", "best.pt")
+    assert hub_location("hf://someone/repo/run_a/last.pt") == ("someone/repo", "run_a/last.pt")
+    assert fetch_adapter("checkpoints/x/best.pt") == Path("checkpoints/x/best.pt"), "local paths pass through"
+    print("hub OK: adapter, config and model card staged (nothing uploaded); hf:// addresses parsed")
 
 
 if __name__ == "__main__":

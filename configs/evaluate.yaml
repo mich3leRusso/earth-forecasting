@@ -7,7 +7,7 @@
 
 steps: [download, evaluate]
 
-adapter: checkpoints/lora_1h/best.pt   # null = the base model (forecast only; evaluation needs an adapter)
+adapter: hf://michele007rok/StormScope_Ireland   # a local path, or hf://<user>/<repo>[/<file>] (downloaded on first use); null = the base model
 
 data:
   dir: data/fci_ireland
