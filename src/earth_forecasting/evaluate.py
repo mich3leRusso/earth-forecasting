@@ -12,6 +12,7 @@ The `evaluate` step (see cli.py) scores the config's adapter (see find_adapter),
 Run `python -m earth_forecasting.evaluate` for a smoke test on synthetic frames (no network).
 """
 
+import csv
 import tempfile
 from collections import OrderedDict
 from pathlib import Path
@@ -35,6 +36,15 @@ def find_adapter(cfg):
         return fetch_adapter(cfg.adapter)
     ckpt = Path(cfg.output.get("checkpoints", ""))
     return next((p for p in (ckpt / "best.pt", ckpt / "last.pt") if p.is_file()), None)
+
+
+def finetuned_model(cfg, device=None):
+    """(model, adapter path): StormScope for the config with its adapter applied, or the base model if none."""
+    model = model_from_config(cfg, device or torch.device("cuda"))
+    adapter = find_adapter(cfg)
+    if adapter:
+        load_adapter(model, adapter)
+    return model, adapter
 
 
 def rollout(model, context, t, lead_steps):
@@ -103,6 +113,16 @@ def evaluate(cfg, adapter, writer=None):
         if writer:
             for n in names:
                 writer.add_scalar(f"eval/rmse_{hours:g}h/{n}", rmse[n][k].mean().item(), 0)
+
+    table = Path(cfg.output.tensorboard) / f"rmse_{period}.csv"  # one row per lead, channel and model
+    table.parent.mkdir(parents=True, exist_ok=True)
+    with open(table, "w", newline="") as f:
+        rows = csv.writer(f)
+        rows.writerow(["lead_hours", "channel", "model", "rmse"])
+        for k in range(lead):
+            for c, channel in enumerate(model.variables):
+                rows.writerows([(k + 1) * cfg.data.step_minutes / 60, channel, n, f"{rmse[n][k, c]:.5f}"] for n in names)
+    print(f"\ntable saved to {table}")
     return rmse
 
 
@@ -128,8 +148,11 @@ def smoke_test():
         cfg = OmegaConf.merge(cfg, {
             "data": {"dir": d, "test": ["2026-07-01T05:00", "2026-07-01T06:00"]},  # test takes precedence over val
             "eval": {"samples": 1, "diffusion_steps": 2},
+            "output": {"tensorboard": d},
         })
         rmse = evaluate(cfg, f"{d}/adapter.pt")
+        table = (Path(d) / "rmse_test.csv").read_text().splitlines()
+        assert len(table) == 1 + 2 * shape[0] * 3, "CSV should hold every lead x channel x model"
     assert rmse is not None and all(torch.isfinite(r).all() and r.shape == (2, shape[0]) for r in rmse.values())
     # a fresh adapter is a no-op (lora_B = 0), so with shared noise both models must score the same
     assert torch.allclose(rmse["fine-tuned"], rmse["base"], atol=1e-3), "fine-tuned and base should match"

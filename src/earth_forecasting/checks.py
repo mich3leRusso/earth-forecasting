@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from earth_forecasting.config import load_config
 from earth_forecasting.data import SPLITS, FrameWindows, synthetic_frame_shape, write_synthetic_frames
+from earth_forecasting.plots import window_figure
 from earth_forecasting.stormscope import earth_mask, model_from_config
 
 
@@ -66,32 +67,14 @@ def check_data(model, datasets: dict, batch_size: int = 8, num_workers: int = 2,
         raise ValueError("data has gaps that training would fill with zeros:\n" + "\n".join(problems))
 
 
-def save_window_figure(model, dataset, path: Path, channels=("fci06vis", "fci105ir")) -> None:
-    """Plot the normalized frames of the middle window for two channels, north up."""
-    import matplotlib.pyplot as plt
-
-    frames, t = dataset[len(dataset) // 2]
-    x = model.normalize(frames.to(model.invariants.device)).cpu()
-    fig, axes = plt.subplots(len(channels), len(frames), figsize=(2.2 * len(frames), 1.6 * len(channels)), squeeze=False)
-    anchor = np.datetime64(int(t), "s")
-    for row, name in enumerate(channels):
-        c = list(model.variables).index(name)
-        for col in range(len(frames)):
-            axes[row, col].imshow(x[col, c], origin="lower", cmap="gray")  # row 0 is the southern edge
-            axes[row, col].set_xticks([]), axes[row, col].set_yticks([])
-            axes[row, col].set_title(f"{name} {'target' if col == len(frames) - 1 else f't{col - len(frames) + 2:+d}h'}", fontsize=7)
-    fig.suptitle(f"window anchored at {anchor} UTC (normalized inputs)", fontsize=9)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=120, bbox_inches="tight")
-
-
 def run(cfg) -> None:
     """Step `check`: check the data of every period in the config and save an example window."""
     model = model_from_config(cfg, torch.device("cuda"))
     step = np.timedelta64(cfg.data.step_minutes, "m")
     datasets = {name: FrameWindows(*cfg.data[name], cfg.data.dir, step) for name in SPLITS if name in cfg.data}
     figure = Path(cfg.output.tensorboard).parent / "data_check.png"
-    save_window_figure(model, list(datasets.values())[-1], figure)
+    example = list(datasets.values())[-1]
+    window_figure(model, *example[len(example) // 2]).savefig(figure, dpi=120, bbox_inches="tight")
     print(f"example window saved to {figure}")
     check_data(model, datasets)
     print("\ndata OK")

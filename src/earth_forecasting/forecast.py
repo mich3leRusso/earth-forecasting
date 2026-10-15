@@ -16,12 +16,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from physicsnemo.experimental.peft import load_adapter
 
 from earth_forecasting.config import load_config, region_of
 from earth_forecasting.data import FrameWindows, download_frames, synthetic_frame_shape, write_synthetic_frames
-from earth_forecasting.evaluate import find_adapter, rollout
-from earth_forecasting.stormscope import N_INPUT, model_from_config
+from earth_forecasting.evaluate import finetuned_model, rollout
+from earth_forecasting.stormscope import N_INPUT
 
 
 @torch.no_grad()
@@ -35,10 +34,7 @@ def run(cfg) -> Path:
         raise FileNotFoundError(f"the {N_INPUT} frames up to {start} are not all available")
     frames, t = window[0]
 
-    model = model_from_config(cfg, torch.device("cuda"))
-    adapter = find_adapter(cfg)
-    if adapter:
-        load_adapter(model, adapter)
+    model, adapter = finetuned_model(cfg)
     if cfg.forecast.diffusion_steps:
         model.num_diffusion_steps = cfg.forecast.diffusion_steps
     print(f"forecasting {cfg.forecast.steps} x {cfg.data.step_minutes} min from {start} UTC with {adapter or 'the base model'}")

@@ -17,3 +17,4 @@ checkpoints/
 runs/
 graphify-out/
 configs/publish.yaml
+visualization/
