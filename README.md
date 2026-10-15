@@ -159,10 +159,11 @@ the adapters gently back toward the base model. All of this is in the `train` se
 config. The length of the schedule comes from `train.epochs`, the number of passes over the
 training windows; `train.max_hours` is only a safety limit.
 
-Validation runs every `train.val_every` samples with fixed noise, so the numbers are comparable from
-one check to the next. The very first validation happens before any training, which gives you the
-base model's score as a baseline. `best.pt` is only written when the adapter beats that baseline;
-`last.pt` is always written at the end. Both go to `checkpoints/lora_1h/`.
+Training is organized in epochs, one pass over every training window. After each epoch the
+model is validated with fixed noise, so the numbers are comparable from one epoch to the next, and
+a line like `epoch 3/8  train 0.4312  val 0.4219  12.4 min` is printed. Epoch 0 is the base model,
+before any training, which gives you the baseline. `best.pt` is only written when an epoch beats
+it; `last.pt` is always written at the end. Both go to `checkpoints/lora_1h/`.
 
 To watch progress:
 
@@ -170,8 +171,9 @@ To watch progress:
 uv run tensorboard --logdir runs
 ```
 
-You'll see the training loss for each expert, the validation loss, the learning rate, the gradient
-norm, seconds per sample and peak GPU memory. The config the run used is saved under the Text tab.
+Every curve has one point per epoch: the mean training loss (overall and for each expert), the
+validation loss, the learning rate at the end of the epoch, the mean gradient norm, minutes per
+epoch and peak GPU memory. The config the run used is saved under the Text tab.
 
 ## Evaluating forecasts
 

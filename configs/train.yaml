@@ -30,14 +30,13 @@ train:
   min_lr: 0.1            # cosine decay ends at this fraction of lr
   grad_clip: 1.0         # max gradient norm per optimizer step
   grad_accum: 8          # batch is 1 (8 GB GPU); one optimizer step every grad_accum samples
-  epochs: 8              # passes over the training windows; also the length of the lr schedule
+  epochs: 12             # passes over the training windows; also the length of the lr schedule
   max_hours: 20.0        # safety limit on wall-clock time
   max_steps: null        # samples; overrides epochs, mainly for quick tests
-  val_every: 400         # samples between validations
   val_samples: 50        # validation windows per check (fixed noise, comparable across checks)
   num_workers: 2
 
-eval:                  # real forecasts on the val period, run after training (or with `earth-evaluate`)
+eval:                  # real forecasts on the val period: the evaluate step, after training or with steps=[evaluate]
   lead_steps: 2        # +1h and +2h: one model step at a time, feeding predictions back in
   samples: 20          # validation times, evenly spread over the val period
   diffusion_steps: 48  # sampler steps per forecast step (StormScope's default)
@@ -46,6 +45,6 @@ output:
   checkpoints: checkpoints/lora_1h   # best.pt (lowest val loss) and last.pt adapters
   tensorboard: runs/lora_1h          # `tensorboard --logdir runs`
 
-hub:                   # used by `earth-publish`
+hub:                   # used by the publish step: `uv run earth configs/train.yaml steps=[publish]`
   repo_id: null        # your Hugging Face model repo, e.g. your-name/stormscope-ireland-lora
   private: true        # only applies when the repo is created

@@ -1,0 +1,34 @@
+# Everything except training: score an adapter you already have, or make a forecast with it.
+#   uv run earth configs/evaluate.yaml                                  # the steps below
+#   uv run earth configs/evaluate.yaml steps=[forecast]                 # one forecast from forecast.start
+#   uv run earth configs/evaluate.yaml adapter=checkpoints/lora_1h/last.pt
+# Region and step must match the config the adapter was trained with.
+
+
+steps: [download, evaluate]
+
+adapter: checkpoints/lora_1h/best.pt   # null = the base model (forecast only; evaluation needs an adapter)
+
+data:
+  dir: data/fci_ireland
+  region:
+    lat: [51.2, 55.6]
+    lon: [-11.0, -5.2]
+  step_minutes: 60
+  # Forecast start times to download and score, [start, end). Keep them after every training and
+  # validation date, so neither model has seen them.
+  test: ["2026-10-01", "2026-10-08"]
+
+eval:
+  lead_steps: 2          # +1h and +2h
+  samples: 20            # forecast times, evenly spread over the test period
+  diffusion_steps: 48    # sampler steps per forecast step (StormScope's default)
+
+#forecast:
+#  start: "2026-10-12T12:00"   # UTC; the six frames up to here are downloaded if missing
+#  steps: 2                    # steps of data.step_minutes
+#  diffusion_steps: 48
+#  output: runs/forecasts      # predicted radiances, one .npy per forecast
+
+output:
+  tensorboard: runs/eval_test   # scores appear here; also the folder of the check step's example image

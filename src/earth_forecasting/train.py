@@ -102,7 +102,11 @@ def make_optimizer(cfg, params, optimizer_steps):
 
 
 def train(cfg):
-    """Batch 1 with gradient accumulation, alternating experts; stops at train.max_hours or train.max_steps."""
+    """Batch 1 with gradient accumulation, alternating experts, for train.epochs epochs.
+
+    Validation, best.pt and the TensorBoard points come once per epoch. train.max_hours and
+    train.max_steps (samples, for quick tests) can stop it earlier.
+    """
     model = setup_model(cfg, torch.device("cuda"))
     losses = [MSEDSMLoss(e, EDMNoiseScheduler(sigma_data=float(e.sigma_data))) for e in model.experts]
 
@@ -123,42 +127,52 @@ def train(cfg):
     writer = SummaryWriter(cfg.output.tensorboard)
     writer.add_text("config", f"```\n{OmegaConf.to_yaml(cfg)}\n```")
 
-    seen, t0 = 0, time.time()
-    deadline = t0 + cfg.train.max_hours * 3600
-    done = lambda: time.time() > deadline or seen >= total
-
-    # best.pt is saved only when validation beats the untouched base model
+    # epoch 0 is the untouched base model; best.pt is saved only when an epoch beats it
     best = validate(model, losses, val_set, cfg.train.val_samples)
     writer.add_scalar("val/loss", best, 0)
-    print(f"train samples {len(train_set)}, val samples {len(val_set)}, val loss before training {best:.4f}")
-    print(f"{cfg.train.optimizer}: {total} samples, {total // cfg.train.grad_accum} optimizer steps")
-    while not done():
+    print(f"{len(train_set)} training windows, {len(val_set)} validation windows, {cfg.train.optimizer}")
+    print(f"epoch 0/{cfg.train.epochs}  val {best:.4f}  (base model)")
+
+    seen, t0 = 0, time.time()
+    deadline = t0 + cfg.train.max_hours * 3600
+    for epoch in range(1, cfg.train.epochs + 1):
+        epoch_start = time.time()
+        expert_losses = [[] for _ in model.experts]
+        grad_norms = []
         for frames, times in loader:
             expert = seen % len(model.experts)
             loss = batch_loss(model, losses, frames, times, expert)
             if not torch.isfinite(loss):
-                raise FloatingPointError(f"non-finite loss at sample {seen} (anchor {times.tolist()})")
+                raise FloatingPointError(f"non-finite loss in epoch {epoch} (anchor {times.tolist()})")
             (loss / cfg.train.grad_accum).backward()
             seen += 1
-            writer.add_scalar(f"train/loss_expert{expert}", loss.item(), seen)
+            expert_losses[expert].append(loss.item())
             if seen % cfg.train.grad_accum == 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
+                grad_norms.append(torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip).item())
                 optimizer.step()
                 schedule.step()
                 optimizer.zero_grad()
-                writer.add_scalar("optim/lr", schedule.get_last_lr()[0], seen)
-                writer.add_scalar("optim/grad_norm", grad_norm.item(), seen)
-            if seen % cfg.train.val_every == 0:
-                val = validate(model, losses, val_set, cfg.train.val_samples)
-                writer.add_scalar("val/loss", val, seen)
-                writer.add_scalar("perf/sec_per_sample", (time.time() - t0) / seen, seen)
-                writer.add_scalar("perf/gpu_peak_gb", torch.cuda.max_memory_allocated() / 1e9, seen)
-                print(f"sample {seen}  val {val:.4f}  {(time.time() - t0) / seen:.2f}s/sample")
-                if val < best:
-                    best = val
-                    save_adapter(model, ckpt_dir / "best.pt")
-            if done():
+            if seen >= total or time.time() > deadline:
                 break
+
+        val = validate(model, losses, val_set, cfg.train.val_samples)
+        train_loss = sum(map(sum, expert_losses)) / max(1, sum(map(len, expert_losses)))
+        for i, values in enumerate(expert_losses):
+            if values:
+                writer.add_scalar(f"train/loss_expert{i}", sum(values) / len(values), epoch)
+        writer.add_scalar("train/loss", train_loss, epoch)
+        writer.add_scalar("val/loss", val, epoch)
+        writer.add_scalar("optim/lr", schedule.get_last_lr()[0], epoch)
+        if grad_norms:
+            writer.add_scalar("optim/grad_norm", sum(grad_norms) / len(grad_norms), epoch)
+        writer.add_scalar("perf/minutes_per_epoch", (time.time() - epoch_start) / 60, epoch)
+        writer.add_scalar("perf/gpu_peak_gb", torch.cuda.max_memory_allocated() / 1e9, epoch)
+        print(f"epoch {epoch}/{cfg.train.epochs}  train {train_loss:.4f}  val {val:.4f}  {(time.time() - epoch_start) / 60:.1f} min")
+        if val < best:
+            best = val
+            save_adapter(model, ckpt_dir / "best.pt")
+        if seen >= total or time.time() > deadline:
+            break
     save_adapter(model, ckpt_dir / "last.pt")
     writer.close()
     return model
@@ -190,7 +204,7 @@ def smoke_test():
         write_synthetic_frames(d, "2026-07-01T00", n_frames=9, shape=shape)  # full windows for anchors 05:00-07:00
         cfg = OmegaConf.merge(cfg, {
             "data": {"dir": d, "train": ["2026-07-01T05:00", "2026-07-01T07:00"], "val": ["2026-07-01T07:00", "2026-07-01T08:00"]},
-            "train": {"max_steps": 4, "grad_accum": 2, "val_every": 4, "val_samples": 1, "num_workers": 0},
+            "train": {"max_steps": 4, "grad_accum": 2, "val_samples": 1, "num_workers": 0},
             "lora": {"output_layer": True},
             "output": {"checkpoints": f"{d}/ckpt", "tensorboard": f"{d}/runs"},
         })
