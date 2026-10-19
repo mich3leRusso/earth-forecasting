@@ -20,7 +20,13 @@ cd earth-forecasting
 CUDA_VISIBLE_DEVICES="" uv sync                  # hide the GPU only while installing
 ```
 
-Hiding the GPU makes NATTEN, the attention library StormScope uses, install its pure-PyTorch
+Without uv, plain pip works too, with the same pinned versions:
+
+```bash
+CUDA_VISIBLE_DEVICES="" pip install -r requirements.txt && pip install --no-deps -e .
+```
+
+The notebook does this by itself when the project isn't installed (see below). Hiding the GPU makes NATTEN, the attention library StormScope uses, install its pure-PyTorch
 backend instead of compiling CUDA kernels, which fails unless your CUDA toolkit matches PyTorch's
 exactly. Everything uses the GPU normally afterwards.
 
