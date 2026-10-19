@@ -17,11 +17,11 @@ data:
   step_minutes: 60
   # Forecast start times to download and score, [start, end). Keep them after every training and
   # validation date, so neither model has seen them.
-  test: ["2026-10-01", "2026-10-08"]
+  test: ["2026-10-01", "2026-10-16"]
 
 eval:
   lead_steps: 2          # +1h and +2h
-  samples: 20            # forecast times, evenly spread over the test period
+  samples: 60            # forecast times, evenly spread over the test period
   diffusion_steps: 48    # sampler steps per forecast step (StormScope's default)
 
 #forecast:
