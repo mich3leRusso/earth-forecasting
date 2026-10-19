@@ -33,8 +33,9 @@ exactly. Everything uses the GPU normally afterwards.
 ### EUMETSAT credentials
 
 The download needs the API key and secret of your EUMETSAT account, which you can generate at
-[api.eumetsat.int/api-key](https://api.eumetsat.int/api-key/) once logged in. Create
-`src/earth_forecasting/constants.py` with them:
+[api.eumetsat.int/api-key](https://api.eumetsat.int/api-key/) once logged in. **They must be in
+the file `src/earth_forecasting/constants.py`**, which the download reads at start; without it
+(and without the environment variables below) the `download` step can't log in. Create it with:
 
 ```bash
 cat > src/earth_forecasting/constants.py <<'EOF'
@@ -43,7 +44,7 @@ EUMETSAT_SECRET = "your-consumer-secret"
 EOF
 ```
 
-The file is git-ignored, so the keys never reach GitHub. Exporting `EUMETSAT_CONSUMER_KEY` and
+Keep it out of git: it should be listed in `.gitignore`, and never committed. Exporting `EUMETSAT_CONSUMER_KEY` and
 `EUMETSAT_CONSUMER_SECRET` as environment variables works too.
 
 The StormScope weights (2.4 GB) download by themselves on first use.
@@ -184,6 +185,7 @@ configs/                 train.yaml, evaluate.yaml, forecast.yaml, publish.yaml
 src/earth_forecasting/
     cli.py               the `earth` command: runs the config's steps
     config.py            loads a config plus key=value overrides
+    constants.py         your EUMETSAT key and secret (you create it, see Install); needed to download
     stormscope.py        loads the model, crops it to a region, sets the time step
     data.py              downloads frames and turns them into training windows
     checks.py            checks the data before training
